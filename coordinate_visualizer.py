@@ -1,70 +1,64 @@
 import sys
+import threading
+import re
+import serial  # 新增串口库
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox)
 from PyQt5.QtGui import QPainter, QPen, QColor
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
 class CoordinateVisualizer(QMainWindow):
+    new_point_signal = pyqtSignal(float, float)  # 用于线程安全地添加点
     def __init__(self):
         super().__init__()
         self.points = []  # 存储所有坐标点
         self.initUI()
+        self.serial_thread = None
+        self.serial_port = 'COM10'  # 修改为你的串口号
+        self.baudrate = 115200       # 修改为你的波特率
+        self.new_point_signal.connect(self.add_point_from_serial)
+        self.start_serial_thread()
+
+    def start_serial_thread(self):
+        def serial_worker():
+            try:
+                ser = serial.Serial(self.serial_port, self.baudrate, timeout=1)
+                buffer = ''
+                while True:
+                    data = ser.read(ser.in_waiting or 1).decode(errors='ignore')
+                    if data:
+                        buffer += data
+                        # 处理所有完整的 distance[x,y]
+                        for match in re.finditer(r'distance\[(\d+),(\d+)\]', buffer):
+                            x, y = float(match.group(1)), float(match.group(2))
+                            self.new_point_signal.emit(x, y)
+                        # 移除已处理部分，避免重复
+                        buffer = re.sub(r'distance\[(\d+),(\d+)\]', '', buffer)
+            except Exception as e:
+                print(f"串口打开失败或读取异常: {e}")
+        self.serial_thread = threading.Thread(target=serial_worker, daemon=True)
+        self.serial_thread.start()
+
+    def add_point_from_serial(self, x, y):
+        if 0 <= x <= 4000 and 0 <= y <= 4000:
+            self.points = [(x, y)]  # 只保留最新点
+            self.canvas.points = self.points
+            self.canvas.update()
 
     def initUI(self):
-        self.setWindowTitle('坐标可视化系统')
-        self.setGeometry(100, 100, 800, 900)  # 窗口大小
+        self.setWindowTitle('CAR PLACE')
+        self.setGeometry(100, 100, 900, 950)  # 更大窗口
 
-        # 创建中心部件和布局
+        # 创建中心部件和主布局
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(40, 30, 40, 30)  # 增加留白
+        main_layout.setSpacing(30)
 
-        # 创建输入区域
-        input_widget = QWidget()
-        input_layout = QHBoxLayout(input_widget)
-
-        # X坐标输入
-        input_layout.addWidget(QLabel('X坐标 (mm):'))
-        self.x_input = QLineEdit()
-        input_layout.addWidget(self.x_input)
-
-        # Y坐标输入
-        input_layout.addWidget(QLabel('Y坐标 (mm):'))
-        self.y_input = QLineEdit()
-        input_layout.addWidget(self.y_input)
-
-        # 添加按钮
-        add_button = QPushButton('添加坐标点')
-        add_button.clicked.connect(self.add_point)
-        input_layout.addWidget(add_button)
-
-        # 清除按钮
-        clear_button = QPushButton('清除所有点')
-        clear_button.clicked.connect(self.clear_points)
-        input_layout.addWidget(clear_button)
-
-        layout.addWidget(input_widget)
-
-        # 创建绘图区域
+        # 只保留绘图区域
         self.canvas = Canvas(self)
-        layout.addWidget(self.canvas)
-
-    def add_point(self):
-        try:
-            x = float(self.x_input.text())
-            y = float(self.y_input.text())
-            
-            # 检查坐标是否在有效范围内
-            if 0 <= x <= 4000 and 0 <= y <= 4000:
-                self.points.append((x, y))
-                self.canvas.points = self.points
-                self.canvas.update()
-                self.x_input.clear()
-                self.y_input.clear()
-            else:
-                QMessageBox.warning(self, '错误', '坐标必须在0-4000mm范围内！')
-        except ValueError:
-            QMessageBox.warning(self, '错误', '请输入有效的数字！')
+        main_layout.addWidget(self.canvas, stretch=1)
 
     def clear_points(self):
         self.points.clear()
