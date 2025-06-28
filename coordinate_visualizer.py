@@ -1,69 +1,181 @@
 import sys
 import threading
 import re
-import serial  # 新增串口库
+import serial
+import serial.tools.list_ports  # 新增串口枚举
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                           QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox)
-from PyQt5.QtGui import QPainter, QPen, QColor
+                           QHBoxLayout, QLabel, QComboBox, QFrame)
+from PyQt5.QtGui import QPainter, QPen, QColor, QFont
 from PyQt5.QtCore import Qt, pyqtSignal
 
 class CoordinateVisualizer(QMainWindow):
-    new_point_signal = pyqtSignal(float, float)  # 用于线程安全地添加点
+    new_point_signal = pyqtSignal(float, float)
+    status_update_signal = pyqtSignal(str, str)  # 状态区信号：串口、坐标/异常
     def __init__(self):
         super().__init__()
-        self.points = []  # 存储所有坐标点
-        self.initUI()
+        self.points = []
         self.serial_thread = None
-        self.serial_port = 'COM10'  # 修改为你的串口号
-        self.baudrate = 115200       # 修改为你的波特率
+        self.serial_port = None
+        self.baudrate = 115200
+        self.ser = None
+        self.initUI()
         self.new_point_signal.connect(self.add_point_from_serial)
+        self.status_update_signal.connect(self.update_status)
+        self.start_serial_thread()
+
+    def get_available_ports(self):
+        return [port.device for port in serial.tools.list_ports.comports()]
+
+    def on_port_changed(self, port):
+        self.serial_port = port
+        self.error_label.setText("")  # 切换串口时清空错误
+        self.status_update_signal.emit(f"串口: {port} 波特率: {self.baudrate}", "等待数据...")
+        self.start_serial_thread()
+
+    def on_baudrate_changed(self, baud):
+        self.baudrate = int(baud)
+        self.status_update_signal.emit(f"串口: {self.serial_port} 波特率: {self.baudrate}", "等待数据...")
         self.start_serial_thread()
 
     def start_serial_thread(self):
-        def serial_worker():
+        if hasattr(self, 'ser') and self.ser:
             try:
-                ser = serial.Serial(self.serial_port, self.baudrate, timeout=1)
-                buffer = ''
-                while True:
-                    data = ser.read(ser.in_waiting or 1).decode(errors='ignore')
-                    if data:
-                        buffer += data
-                        # 处理所有完整的 distance[x,y]
-                        for match in re.finditer(r'distance\[(\d+),(\d+)\]', buffer):
-                            x, y = float(match.group(1)), float(match.group(2))
-                            self.new_point_signal.emit(x, y)
-                        # 移除已处理部分，避免重复
-                        buffer = re.sub(r'distance\[(\d+),(\d+)\]', '', buffer)
-            except Exception as e:
-                print(f"串口打开失败或读取异常: {e}")
+                self.ser.close()
+            except Exception:
+                pass
+        def serial_worker():
+            while True:
+                try:
+                    if not self.serial_port:
+                        return
+                    self.ser = serial.Serial(self.serial_port, self.baudrate, timeout=1)
+                    buffer = ''
+                    while True:
+                        data = self.ser.read(self.ser.in_waiting or 1).decode(errors='ignore')
+                        if data:
+                            buffer += data
+                            for match in re.finditer(r'distance\[(\d+),(\d+)\]', buffer):
+                                x, y = float(match.group(1)), float(match.group(2))
+                                self.new_point_signal.emit(x, y)
+                                self.status_update_signal.emit(f"串口: {self.serial_port} 波特率: {self.baudrate}", f"坐标: ({int(x)}, {int(y)})")
+                            buffer = re.sub(r'distance\[(\d+),(\d+)\]', '', buffer)
+                except Exception as e:
+                    self.error_signal.emit(str(e))
+                    import time
+                    time.sleep(2)  # 等待2秒后重试
+                else:
+                    break
         self.serial_thread = threading.Thread(target=serial_worker, daemon=True)
         self.serial_thread.start()
 
+    # 新增错误信号和处理
+    from PyQt5.QtCore import pyqtSignal as _pyqtSignal
+    error_signal = _pyqtSignal(str)
+    def show_error(self, msg):
+        self.error_label.setText(f"错误: {msg}")
+
     def add_point_from_serial(self, x, y):
         if 0 <= x <= 4000 and 0 <= y <= 4000:
-            self.points = [(x, y)]  # 只保留最新点
+            self.points = [(x, y)]
             self.canvas.points = self.points
             self.canvas.update()
+        else:
+            self.status_update_signal.emit(f"串口: {self.serial_port} 波特率: {self.baudrate}", f"警告: 坐标越界 ({x},{y})")
+
+    def update_status(self, port_text, info_text):
+        self.port_status.setText(port_text)
+        self.info_status.setText(info_text)
 
     def initUI(self):
         self.setWindowTitle('CAR PLACE')
-        self.setGeometry(100, 100, 900, 950)  # 更大窗口
-
-        # 创建中心部件和主布局
+        self.setGeometry(100, 100, 900, 950)
+        # 全局字体设置为思源黑体，找不到则用系统无衬线
+        app_font = QFont("Source Han Sans SC", 12)
+        QApplication.setFont(app_font)
+        self.setStyleSheet("QMainWindow{background:#F5F5F5;}")
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(40, 30, 40, 30)  # 增加留白
-        main_layout.setSpacing(30)
+        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(20)
 
-        # 只保留绘图区域
+        # 顶部：串口选择区
+        top_frame = QFrame()
+        top_frame.setFrameShape(QFrame.StyledPanel)
+        top_frame.setStyleSheet("QFrame{background:#fff;border-bottom:1px solid #ECECEC;}")
+        top_layout = QHBoxLayout(top_frame)
+        top_layout.setContentsMargins(16, 8, 16, 8)
+        top_layout.setSpacing(16)
+        port_label = QLabel('串口选择:')
+        port_label.setFont(QFont("Source Han Sans SC", 14))
+        self.port_combo = QComboBox()
+        self.port_combo.setFont(QFont("Source Han Sans SC", 13))
+        self.port_combo.setStyleSheet("QComboBox{min-width:120px;}")
+        ports = self.get_available_ports()
+        self.port_combo.addItems(ports)
+        if ports:
+            self.serial_port = ports[0]
+        self.port_combo.currentTextChanged.connect(self.on_port_changed)
+        # 新增波特率选择
+        baud_label = QLabel('波特率:')
+        baud_label.setFont(QFont("Source Han Sans SC", 14))
+        self.baud_combo = QComboBox()
+        self.baud_combo.setFont(QFont("Source Han Sans SC", 13))
+        self.baud_combo.setStyleSheet("QComboBox{min-width:100px;}")
+        baudrates = ["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"]
+        self.baud_combo.addItems(baudrates)
+        self.baud_combo.setCurrentText(str(self.baudrate))
+        self.baud_combo.currentTextChanged.connect(self.on_baudrate_changed)
+        top_layout.addWidget(port_label)
+        top_layout.addWidget(self.port_combo)
+        top_layout.addWidget(baud_label)
+        top_layout.addWidget(self.baud_combo)
+        # 新增错误信息标签
+        self.error_label = QLabel("")
+        self.error_label.setFont(QFont("Source Han Sans SC", 12))
+        self.error_label.setStyleSheet('color:#FF5722;')
+        top_layout.addWidget(self.error_label)
+        top_layout.addStretch(1)
+        main_layout.addWidget(top_frame, stretch=1)
+
+        # 中部：主显示区
+        mid_frame = QFrame()
+        mid_frame.setObjectName('MainCanvas')
+        mid_frame.setStyleSheet("""
+            QFrame#MainCanvas {
+                background: #fff;
+                border: 1px solid #ECECEC;
+                border-radius: 8px;
+            }
+        """)
+        mid_layout = QVBoxLayout(mid_frame)
+        mid_layout.setContentsMargins(0, 0, 0, 0)
         self.canvas = Canvas(self)
-        main_layout.addWidget(self.canvas, stretch=1)
+        mid_layout.addWidget(self.canvas)
+        main_layout.addWidget(mid_frame, stretch=7)
 
-    def clear_points(self):
-        self.points.clear()
-        self.canvas.points = []
-        self.canvas.update()
+        # 底部：状态区
+        bottom_frame = QFrame()
+        bottom_frame.setFrameShape(QFrame.StyledPanel)
+        bottom_frame.setStyleSheet("QFrame{background:#fff;border-top:1px solid #ECECEC;}")
+        bottom_layout = QHBoxLayout(bottom_frame)
+        bottom_layout.setContentsMargins(16, 8, 16, 8)
+        bottom_layout.setSpacing(24)
+        self.port_status = QLabel('串口: 未连接')
+        self.port_status.setFont(QFont("Source Han Sans SC", 13))
+        self.info_status = QLabel('等待数据...')
+        self.info_status.setFont(QFont("Source Han Sans SC", 13))
+        self.info_status.setStyleSheet('color:#666;')
+        bottom_layout.addWidget(self.port_status)
+        bottom_layout.addWidget(self.info_status)
+        bottom_layout.addStretch(1)
+        main_layout.addWidget(bottom_frame, stretch=2)
+
+        # 立即刷新串口状态
+        if ports:
+            self.status_update_signal.emit(f"串口: {ports[0]}", "等待数据...")
+        else:
+            self.status_update_signal.emit("串口: 未检测到串口", "请检查设备连接")
 
 class Canvas(QWidget):
     def __init__(self, parent):
@@ -143,8 +255,151 @@ class Canvas(QWidget):
             y = int(top + (4000 - point[1]) * scale)
             painter.drawPoint(x, y)
 
+        # 地雷区参数
+        outer_diameter = 1000
+        inner_diameter = 260
+        outer_radius = outer_diameter / 2
+        inner_radius = inner_diameter / 2
+        mine_centers = [(1000, 2000), (2000, 2000), (3000, 2000)]
+
+        # 绘制地雷区（三个双圆环，均匀分布在x=500~3500区间中轴线上）
+        for cx, cy in mine_centers:
+            center_x = int(left + cx * scale)
+            center_y = int(top + (4000 - cy) * scale)
+            # 外环（警示区）
+            painter.setPen(QPen(QColor(255, 140, 0, 180), 6))
+            painter.setBrush(QColor(255, 200, 0, 60))
+            painter.drawEllipse(center_x - int(outer_radius*scale), center_y - int(outer_radius*scale), int(outer_diameter*scale), int(outer_diameter*scale))
+            # 内环（地雷区）
+            painter.setPen(QPen(QColor(200, 0, 0, 220), 4))
+            painter.setBrush(QColor(200, 0, 0, 120))
+            painter.drawEllipse(center_x - int(inner_radius*scale), center_y - int(inner_radius*scale), int(inner_diameter*scale), int(inner_diameter*scale))
+            painter.setBrush(Qt.NoBrush)
+
+        # 绘制目标点（方框）和传感器点，颜色根据与地雷区关系动态变化
+        for point in self.points:
+            px, py = point
+            # 目标框参数
+            rect_w = 150 * scale
+            rect_h = 80 * scale
+            rect_x = left + (px - 75) * scale
+            rect_y = top + (4000 - py - 40) * scale
+            rect_cx = rect_x + rect_w / 2
+            rect_cy = rect_y + rect_h / 2
+            # 检查与地雷区关系
+            status = 'safe'  # 默认安全
+            for cx, cy in mine_centers:
+                # 圆心像素坐标
+                mine_cx = left + cx * scale
+                mine_cy = top + (4000 - cy) * scale
+                # 计算矩形与圆的最近距离
+                dx = abs(mine_cx - rect_cx)
+                dy = abs(mine_cy - rect_cy)
+                closest_x = max(dx - rect_w/2, 0)
+                closest_y = max(dy - rect_h/2, 0)
+                dist = (closest_x**2 + closest_y**2) ** 0.5
+                # 先判地雷
+                if dist <= inner_radius * scale:
+                    status = 'mine'
+                    break
+                # 再判地雷区
+                elif dist <= outer_radius * scale:
+                    status = 'warning'
+            # 颜色选择
+            if status == 'mine':
+                box_pen = QPen(QColor(220, 0, 0), 4)
+                box_brush = QColor(220, 0, 0, 60)
+            elif status == 'warning':
+                box_pen = QPen(QColor(255, 200, 0), 4)
+                box_brush = QColor(255, 200, 0, 60)
+            else:
+                box_pen = QPen(QColor(0, 180, 0), 4)
+                box_brush = QColor(0, 180, 0, 60)
+            # 绘制目标框
+            painter.setPen(box_pen)
+            painter.setBrush(box_brush)
+            painter.drawRect(int(rect_x), int(rect_y), int(rect_w), int(rect_h))
+            # 传感器点（相对框左上角偏移120,40）
+            sensor_x = rect_x + 120 * scale
+            sensor_y = rect_y + 40 * scale
+            painter.setBrush(QColor(0, 120, 255))
+            painter.setPen(QPen(QColor(0, 120, 255), 2))
+            painter.drawEllipse(int(sensor_x-6), int(sensor_y-6), 12, 12)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(Qt.red, 6))
+
+        # 绘制起点①和终点②
+        marker_font = QFont("Source Han Sans SC", 18, QFont.Bold)
+        painter.setFont(marker_font)
+        # 起点①
+        start_x = int(left)
+        start_y = int(top)
+        painter.setPen(QPen(QColor(0, 180, 0), 4))
+        painter.setBrush(QColor(0, 180, 0))
+        painter.drawEllipse(start_x-16, start_y-16, 32, 32)
+        painter.setPen(QPen(Qt.white, 2))
+        painter.drawText(start_x-16, start_y-16, 32, 32, Qt.AlignCenter, "①")
+        # 终点②
+        end_x = int(right)
+        end_y = int(bottom)
+        painter.setPen(QPen(QColor(220, 80, 0), 4))
+        painter.setBrush(QColor(220, 80, 0))
+        painter.drawEllipse(end_x-16, end_y-16, 32, 32)
+        painter.setPen(QPen(Qt.white, 2))
+        painter.drawText(end_x-16, end_y-16, 32, 32, Qt.AlignCenter, "②")
+        painter.setBrush(Qt.NoBrush)
+
+        # 绘制起点①出生范围（左上角，630x420mm）
+        painter.setPen(QPen(QColor(0, 180, 255), 3, Qt.DashLine))
+        painter.setBrush(QColor(0, 180, 255, 40))
+        painter.drawRect(int(left), int(top), int(630*scale), int(420*scale))
+        painter.setBrush(Qt.NoBrush)
+
+        # 绘制终点②出生范围（右下角，630x420mm）
+        painter.setPen(QPen(QColor(255, 180, 0), 3, Qt.DashLine))
+        painter.setBrush(QColor(255, 180, 0, 40))
+        painter.drawRect(int(right-630*scale), int(bottom-420*scale), int(630*scale), int(420*scale))
+        painter.setBrush(Qt.NoBrush)
+
+        # 绘制半透明大号数字
+        painter.setPen(QPen(QColor(0, 0, 0, 160), 10))
+        painter.setFont(QFont("Source Han Sans SC", 48, QFont.Bold))
+        painter.drawText(start_x-40, start_y+60, 80, 80, Qt.AlignCenter, "1")
+        painter.drawText(end_x-40, end_y+60, 80, 80, Qt.AlignCenter, "2")
+        # 在起点①和终点②出生点下方绘制半透明大号数字
+        painter.setPen(QPen(QColor(0, 180, 255, 120), 1))
+        painter.setFont(QFont("Source Han Sans SC", 60, QFont.Bold))
+        painter.drawText(start_x-40, start_y+80, 80, 80, Qt.AlignCenter, "1")
+        painter.setPen(QPen(QColor(255, 180, 0, 120), 1))
+        painter.drawText(end_x-40, end_y+80, 80, 80, Qt.AlignCenter, "2")
+
+        # 绘制地雷区（三个双圆环，均匀分布在x=500~3500区间中轴线上）
+        outer_diameter = 1000
+        inner_diameter = 260
+        outer_radius = outer_diameter / 2
+        # 圆心分别为x=500+500=1000, 2000, 3500-500=3000
+        mine_centers = [(1000, 2000), (2000, 2000), (3000, 2000)]
+        for cx, cy in mine_centers:
+            center_x = int(left + cx * scale)
+            center_y = int(top + (4000 - cy) * scale)
+            # 外环（警示区）
+            painter.setPen(QPen(QColor(255, 140, 0, 180), 6))
+            painter.setBrush(QColor(255, 200, 0, 60))
+            painter.drawEllipse(center_x - int(outer_diameter/2*scale), center_y - int(outer_diameter/2*scale), int(outer_diameter*scale), int(outer_diameter*scale))
+            # 内环（地雷区）
+            painter.setPen(QPen(QColor(200, 0, 0, 220), 4))
+            painter.setBrush(QColor(200, 0, 0, 120))
+            painter.drawEllipse(center_x - int(inner_diameter/2*scale), center_y - int(inner_diameter/2*scale), int(inner_diameter*scale), int(inner_diameter*scale))
+            painter.setBrush(Qt.NoBrush)
+
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = CoordinateVisualizer()
-    window.show()
-    sys.exit(app.exec_())
+    try:
+        app = QApplication(sys.argv)
+        window = CoordinateVisualizer()
+        window.show()
+        sys.exit(app.exec_())
+    except Exception as e:
+        print("[FATAL ERROR]", e)
+        import traceback
+        traceback.print_exc()
+        input("按回车退出")
