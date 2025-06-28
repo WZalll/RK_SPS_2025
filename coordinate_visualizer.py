@@ -4,7 +4,7 @@ import re
 import serial
 import serial.tools.list_ports  # 新增串口枚举
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                           QHBoxLayout, QLabel, QComboBox, QFrame)
+                           QHBoxLayout, QLabel, QComboBox, QFrame, QTextEdit, QGroupBox)
 from PyQt5.QtGui import QPainter, QPen, QColor, QFont
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -171,6 +171,49 @@ class CoordinateVisualizer(QMainWindow):
         bottom_layout.addStretch(1)
         main_layout.addWidget(bottom_frame, stretch=2)
 
+        # 新增右侧控件区（错误信息输出+串口信息发送区）
+        # 只在initUI中添加控件布局，功能实现可后续补充
+        # 先移除原有的右侧控件区插入逻辑，改为主区和右区并排
+        # 1. 取出主显示区和底部区
+        main_layout = self.centralWidget().layout() if hasattr(self.centralWidget(), 'layout') else None
+        if main_layout:
+            # 取出主显示区和底部区
+            mid_frame_item = main_layout.takeAt(1)
+            bottom_frame_item = main_layout.takeAt(1)
+            # 创建主区竖直布局
+            main_vbox = QVBoxLayout()
+            main_vbox.addWidget(mid_frame_item.widget())
+            main_vbox.addWidget(bottom_frame_item.widget())
+            main_vbox.setStretch(0, 7)
+            main_vbox.setStretch(1, 2)
+            # 创建右侧竖直布局
+            right_panel = QVBoxLayout()
+            self.error_output_box = QTextEdit()
+            self.error_output_box.setReadOnly(True)
+            self.error_output_box.setStyleSheet('background:#FFF8F0;color:#D32F2F;font-size:14px;border:1px solid #FFD6C8;border-radius:6px;')
+            self.error_output_box.setFixedHeight(80)
+            error_group = QGroupBox('错误信息输出')
+            error_group.setLayout(QVBoxLayout())
+            error_group.layout().addWidget(self.error_output_box)
+            right_panel.addWidget(error_group)
+            self.serial_send_box = QTextEdit()
+            self.serial_send_box.setReadOnly(True)
+            self.serial_send_box.setStyleSheet('background:#F5F5F5;color:#333;font-size:13px;border:1px solid #ECECEC;border-radius:6px;')
+            self.serial_send_box.setFixedHeight(120)
+            send_group = QGroupBox('串口信息发送区')
+            send_group.setLayout(QVBoxLayout())
+            send_group.layout().addWidget(self.serial_send_box)
+            right_panel.addWidget(send_group)
+            right_panel.addStretch(1)
+            # 创建横向布局并加入主区和右区
+            hbox = QHBoxLayout()
+            hbox.addLayout(main_vbox, stretch=7)
+            hbox.addLayout(right_panel, stretch=3)
+            # 清空main_layout并加入hbox
+            while main_layout.count():
+                main_layout.takeAt(0)
+            main_layout.addLayout(hbox)
+
         # 立即刷新串口状态
         if ports:
             self.status_update_signal.emit(f"串口: {ports[0]}", "等待数据...")
@@ -328,50 +371,33 @@ class Canvas(QWidget):
         painter.setBrush(Qt.NoBrush)
         painter.setPen(QPen(Qt.red, 6))
 
-        # 绘制起点①和终点②
-        marker_font = QFont("Source Han Sans SC", 18, QFont.Bold)
-        painter.setFont(marker_font)
-        # 起点①
-        start_x = int(left)
-        start_y = int(top)
-        painter.setPen(QPen(QColor(0, 180, 0), 4))
-        painter.setBrush(QColor(0, 180, 0))
-        painter.drawEllipse(start_x-16, start_y-16, 32, 32)
-        painter.setPen(QPen(Qt.white, 2))
-        painter.drawText(start_x-16, start_y-16, 32, 32, Qt.AlignCenter, "①")
-        # 终点②
-        end_x = int(right)
-        end_y = int(bottom)
-        painter.setPen(QPen(QColor(220, 80, 0), 4))
-        painter.setBrush(QColor(220, 80, 0))
-        painter.drawEllipse(end_x-16, end_y-16, 32, 32)
-        painter.setPen(QPen(Qt.white, 2))
-        painter.drawText(end_x-16, end_y-16, 32, 32, Qt.AlignCenter, "②")
-        painter.setBrush(Qt.NoBrush)
-
-        # 绘制起点①出生范围（左上角，630x420mm）
+        # 移除起点①和终点②的所有徽标，仅保留出生区域矩形
+        # 不再绘制①②圆圈、数字、半透明数字等
+        # 只保留出生区域矩形
         painter.setPen(QPen(QColor(0, 180, 255), 3, Qt.DashLine))
         painter.setBrush(QColor(0, 180, 255, 40))
         painter.drawRect(int(left), int(top), int(630*scale), int(420*scale))
         painter.setBrush(Qt.NoBrush)
-
-        # 绘制终点②出生范围（右下角，630x420mm）
         painter.setPen(QPen(QColor(255, 180, 0), 3, Qt.DashLine))
         painter.setBrush(QColor(255, 180, 0, 40))
         painter.drawRect(int(right-630*scale), int(bottom-420*scale), int(630*scale), int(420*scale))
         painter.setBrush(Qt.NoBrush)
 
-        # 绘制半透明大号数字
-        painter.setPen(QPen(QColor(0, 0, 0, 160), 10))
-        painter.setFont(QFont("Source Han Sans SC", 48, QFont.Bold))
-        painter.drawText(start_x-40, start_y+60, 80, 80, Qt.AlignCenter, "1")
-        painter.drawText(end_x-40, end_y+60, 80, 80, Qt.AlignCenter, "2")
-        # 在起点①和终点②出生点下方绘制半透明大号数字
-        painter.setPen(QPen(QColor(0, 180, 255, 120), 1))
-        painter.setFont(QFont("Source Han Sans SC", 60, QFont.Bold))
-        painter.drawText(start_x-40, start_y+80, 80, 80, Qt.AlignCenter, "1")
-        painter.setPen(QPen(QColor(255, 180, 0, 120), 1))
-        painter.drawText(end_x-40, end_y+80, 80, 80, Qt.AlignCenter, "2")
+        # 在1、2出生区域的矩形内部完全居中添加半透明大号数字1、2
+        painter.setFont(QFont("Source Han Sans SC", int(80*scale), QFont.Bold))
+        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+        # 1 区域内部居中
+        one_rect_left = left
+        one_rect_top = top
+        one_rect_w = 630 * scale
+        one_rect_h = 420 * scale
+        painter.drawText(int(one_rect_left), int(one_rect_top), int(one_rect_w), int(one_rect_h), Qt.AlignCenter, "1")
+        # 2 区域内部居中
+        two_rect_left = right - 630 * scale
+        two_rect_top = bottom - 420 * scale
+        two_rect_w = 630 * scale
+        two_rect_h = 420 * scale
+        painter.drawText(int(two_rect_left), int(two_rect_top), int(two_rect_w), int(two_rect_h), Qt.AlignCenter, "2")
 
         # 绘制地雷区（三个双圆环，均匀分布在x=500~3500区间中轴线上）
         outer_diameter = 1000
