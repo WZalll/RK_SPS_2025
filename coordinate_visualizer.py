@@ -173,46 +173,56 @@ class CoordinateVisualizer(QMainWindow):
 
         # 新增右侧控件区（错误信息输出+串口信息发送区）
         # 只在initUI中添加控件布局，功能实现可后续补充
-        # 先移除原有的右侧控件区插入逻辑，改为主区和右区并排
-        # 1. 取出主显示区和底部区
+        # 修正主界面布局，将状态栏移至最底部
         main_layout = self.centralWidget().layout() if hasattr(self.centralWidget(), 'layout') else None
         if main_layout:
-            # 取出主显示区和底部区
-            mid_frame_item = main_layout.takeAt(1)
-            bottom_frame_item = main_layout.takeAt(1)
-            # 创建主区竖直布局
-            main_vbox = QVBoxLayout()
-            main_vbox.addWidget(mid_frame_item.widget())
-            main_vbox.addWidget(bottom_frame_item.widget())
-            main_vbox.setStretch(0, 7)
-            main_vbox.setStretch(1, 2)
-            # 创建右侧竖直布局
+            # 取出顶部、主显示区、底部区
+            top_frame_item = main_layout.takeAt(0)
+            mid_frame_item = main_layout.takeAt(0)
+            bottom_frame_item = main_layout.takeAt(0)
+
+            # 右侧竖直布局
             right_panel = QVBoxLayout()
+            right_panel.setSpacing(20) # 增加右侧控件间距
             self.error_output_box = QTextEdit()
             self.error_output_box.setReadOnly(True)
             self.error_output_box.setStyleSheet('background:#FFF8F0;color:#D32F2F;font-size:14px;border:1px solid #FFD6C8;border-radius:6px;')
-            self.error_output_box.setFixedHeight(80)
             error_group = QGroupBox('错误信息输出')
-            error_group.setLayout(QVBoxLayout())
-            error_group.layout().addWidget(self.error_output_box)
+            error_group_layout = QVBoxLayout()
+            error_group_layout.addWidget(self.error_output_box)
+            error_group.setLayout(error_group_layout)
             right_panel.addWidget(error_group)
+
             self.serial_send_box = QTextEdit()
             self.serial_send_box.setReadOnly(True)
             self.serial_send_box.setStyleSheet('background:#F5F5F5;color:#333;font-size:13px;border:1px solid #ECECEC;border-radius:6px;')
-            self.serial_send_box.setFixedHeight(120)
             send_group = QGroupBox('串口信息发送区')
-            send_group.setLayout(QVBoxLayout())
-            send_group.layout().addWidget(self.serial_send_box)
+            send_group_layout = QVBoxLayout()
+            send_group_layout.addWidget(self.serial_send_box)
+            send_group.setLayout(send_group_layout)
             right_panel.addWidget(send_group)
             right_panel.addStretch(1)
-            # 创建横向布局并加入主区和右区
-            hbox = QHBoxLayout()
-            hbox.addLayout(main_vbox, stretch=7)
-            hbox.addLayout(right_panel, stretch=3)
-            # 清空main_layout并加入hbox
+
+            # 中部横向布局：主画布+右区
+            mid_hbox = QHBoxLayout()
+            mid_hbox.addWidget(mid_frame_item.widget(), stretch=7)
+            mid_hbox.addLayout(right_panel, stretch=3)
+
+            # 总体竖直布局：顶部+中部+底部
+            vbox = QVBoxLayout()
+            vbox.addWidget(top_frame_item.widget())
+            vbox.addLayout(mid_hbox)
+            vbox.addWidget(bottom_frame_item.widget()) # 状态栏移到最下方
+            vbox.setStretch(0, 0) # 顶部不拉伸
+            vbox.setStretch(1, 1) # 中部拉伸
+            vbox.setStretch(2, 0) # 底部不拉伸
+
+            # 清空main_layout并加入vbox
             while main_layout.count():
-                main_layout.takeAt(0)
-            main_layout.addLayout(hbox)
+                item = main_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            main_layout.addLayout(vbox)
 
         # 立即刷新串口状态
         if ports:
@@ -225,7 +235,7 @@ class Canvas(QWidget):
         super().__init__(parent)
         self.points = []
         self.grid_size = 100  # 网格大小（mm）
-        self.margin = 50      # 画布边距
+        self.margin = 90      # 画布边距由70提升到90，防止坐标数字被遮挡
         self.setMinimumSize(900, 900)  # 设置更大最小大小
 
     def paintEvent(self, event):
@@ -256,40 +266,36 @@ class Canvas(QWidget):
         painter.drawLine(left, bottom, right, bottom)  # X轴
         painter.drawLine(left, top, left, bottom)      # Y轴
 
-        # 绘制坐标轴刻度和数字
+        # 绘制坐标轴刻度和数字（优化版）
         font = painter.font()
         font.setPointSize(12)
         painter.setFont(font)
+        fm = painter.fontMetrics() # 使用FontMetrics精确计算
         painter.setPen(QPen(Qt.black, 2))
+
         # X轴刻度
         for i in range(0, 4001, 1000):
             x = int(left + i * scale)
             y = bottom
-            painter.drawLine(x, y-7, x, y+7)
-            # 4000刻度往左缩20像素，0刻度往右缩10像素
-            if i == 0:
-                painter.drawText(x-5, y+25, 30, 20, Qt.AlignLeft, str(i))  # 上移10像素
-            elif i == 4000:
-                painter.drawText(x-25, y+25, 30, 20, Qt.AlignRight, str(i))  # 上移10像素
-            else:
-                painter.drawText(x-15, y+25, 30, 20, Qt.AlignCenter, str(i))  # 上移10像素
+            painter.drawLine(x, y - 7, x, y + 7)
+            text = str(i)
+            text_width = fm.width(text)
+            painter.drawText(x - text_width // 2, y + 25, text)
+
         # Y轴刻度
         for i in range(0, 4001, 1000):
             x = left
             y = int(top + (4000 - i) * scale)
-            painter.drawLine(x-7, y, x+7, y)
-            # 4000刻度往下缩10像素，0刻度往上缩10像素
-            if i == 0:
-                painter.drawText(x-55, y-10, 40, 20, Qt.AlignRight|Qt.AlignVCenter, str(i))
-            elif i == 4000:
-                painter.drawText(x-55, y+5, 40, 20, Qt.AlignRight|Qt.AlignVCenter, str(i))
-            else:
-                painter.drawText(x-55, y-10, 40, 20, Qt.AlignRight|Qt.AlignVCenter, str(i))
+            painter.drawLine(x - 7, y, x + 7, y)
+            text = str(i)
+            text_width = fm.width(text)
+            painter.drawText(x - text_width - 15, y + fm.height() // 4, text)
+
         # XY标识远离刻度
         painter.setPen(QPen(Qt.blue, 2))
         painter.setFont(font)
-        painter.drawText(right+15, bottom+10, 30, 20, Qt.AlignLeft|Qt.AlignVCenter, "X")
-        painter.drawText(left-30, top-20, 20, 20, Qt.AlignLeft|Qt.AlignVCenter, "Y")
+        painter.drawText(right + 15, bottom + 10, "X")
+        painter.drawText(left - 30, top - 15, "Y")
 
         # 绘制坐标点
         painter.setPen(QPen(Qt.red, 6))
@@ -312,11 +318,11 @@ class Canvas(QWidget):
             # 外环（警示区）
             painter.setPen(QPen(QColor(255, 140, 0, 180), 6))
             painter.setBrush(QColor(255, 200, 0, 60))
-            painter.drawEllipse(center_x - int(outer_radius*scale), center_y - int(outer_radius*scale), int(outer_diameter*scale), int(outer_diameter*scale))
+            painter.drawEllipse(center_x - int(outer_radius * scale), center_y - int(outer_radius * scale), int(outer_diameter * scale), int(outer_diameter * scale))
             # 内环（地雷区）
             painter.setPen(QPen(QColor(200, 0, 0, 220), 4))
             painter.setBrush(QColor(200, 0, 0, 120))
-            painter.drawEllipse(center_x - int(inner_radius*scale), center_y - int(inner_radius*scale), int(inner_diameter*scale), int(inner_diameter*scale))
+            painter.drawEllipse(center_x - int(inner_radius * scale), center_y - int(inner_radius * scale), int(inner_diameter * scale), int(inner_diameter * scale))
             painter.setBrush(Qt.NoBrush)
 
         # 绘制目标点（方框）和传感器点，颜色根据与地雷区关系动态变化
@@ -338,9 +344,9 @@ class Canvas(QWidget):
                 # 计算矩形与圆的最近距离
                 dx = abs(mine_cx - rect_cx)
                 dy = abs(mine_cy - rect_cy)
-                closest_x = max(dx - rect_w/2, 0)
-                closest_y = max(dy - rect_h/2, 0)
-                dist = (closest_x**2 + closest_y**2) ** 0.5
+                closest_x = max(dx - rect_w / 2, 0)
+                closest_y = max(dy - rect_h / 2, 0)
+                dist = (closest_x ** 2 + closest_y ** 2) ** 0.5
                 # 先判地雷
                 if dist <= inner_radius * scale:
                     status = 'mine'
@@ -367,7 +373,7 @@ class Canvas(QWidget):
             sensor_y = rect_y + 40 * scale
             painter.setBrush(QColor(0, 120, 255))
             painter.setPen(QPen(QColor(0, 120, 255), 2))
-            painter.drawEllipse(int(sensor_x-6), int(sensor_y-6), 12, 12)
+            painter.drawEllipse(int(sensor_x - 6), int(sensor_y - 6), 12, 12)
         painter.setBrush(Qt.NoBrush)
         painter.setPen(QPen(Qt.red, 6))
 
@@ -376,15 +382,15 @@ class Canvas(QWidget):
         # 只保留出生区域矩形
         painter.setPen(QPen(QColor(0, 180, 255), 3, Qt.DashLine))
         painter.setBrush(QColor(0, 180, 255, 40))
-        painter.drawRect(int(left), int(top), int(630*scale), int(420*scale))
+        painter.drawRect(int(left), int(top), int(630 * scale), int(420 * scale))
         painter.setBrush(Qt.NoBrush)
         painter.setPen(QPen(QColor(255, 180, 0), 3, Qt.DashLine))
         painter.setBrush(QColor(255, 180, 0, 40))
-        painter.drawRect(int(right-630*scale), int(bottom-420*scale), int(630*scale), int(420*scale))
+        painter.drawRect(int(right - 630 * scale), int(bottom - 420 * scale), int(630 * scale), int(420 * scale))
         painter.setBrush(Qt.NoBrush)
 
         # 在1、2出生区域的矩形内部完全居中添加半透明大号数字1、2
-        painter.setFont(QFont("Source Han Sans SC", int(80*scale), QFont.Bold))
+        painter.setFont(QFont("Source Han Sans SC", int(80 * scale), QFont.Bold))
         painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
         # 1 区域内部居中
         one_rect_left = left
@@ -398,25 +404,6 @@ class Canvas(QWidget):
         two_rect_w = 630 * scale
         two_rect_h = 420 * scale
         painter.drawText(int(two_rect_left), int(two_rect_top), int(two_rect_w), int(two_rect_h), Qt.AlignCenter, "2")
-
-        # 绘制地雷区（三个双圆环，均匀分布在x=500~3500区间中轴线上）
-        outer_diameter = 1000
-        inner_diameter = 260
-        outer_radius = outer_diameter / 2
-        # 圆心分别为x=500+500=1000, 2000, 3500-500=3000
-        mine_centers = [(1000, 2000), (2000, 2000), (3000, 2000)]
-        for cx, cy in mine_centers:
-            center_x = int(left + cx * scale)
-            center_y = int(top + (4000 - cy) * scale)
-            # 外环（警示区）
-            painter.setPen(QPen(QColor(255, 140, 0, 180), 6))
-            painter.setBrush(QColor(255, 200, 0, 60))
-            painter.drawEllipse(center_x - int(outer_diameter/2*scale), center_y - int(outer_diameter/2*scale), int(outer_diameter*scale), int(outer_diameter*scale))
-            # 内环（地雷区）
-            painter.setPen(QPen(QColor(200, 0, 0, 220), 4))
-            painter.setBrush(QColor(200, 0, 0, 120))
-            painter.drawEllipse(center_x - int(inner_diameter/2*scale), center_y - int(inner_diameter/2*scale), int(inner_diameter*scale), int(inner_diameter*scale))
-            painter.setBrush(Qt.NoBrush)
 
 if __name__ == '__main__':
     try:
